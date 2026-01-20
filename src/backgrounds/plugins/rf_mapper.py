@@ -115,8 +115,6 @@ class RFmapper(Background[RFmapperConfig]):
 
         self.seen_devices: Dict[str, RFData] = {}
 
-        # 移除未使用的 self.seen_names
-
         self.start()
 
     async def scan(self) -> List[RFData]:
