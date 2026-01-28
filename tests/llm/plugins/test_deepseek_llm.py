@@ -176,3 +176,118 @@ async def test_io_provider_timing(llm, mock_response):
         assert llm.io_provider.llm_start_time is not None
         assert llm.io_provider.llm_end_time is not None
         assert llm.io_provider.llm_end_time >= llm.io_provider.llm_start_time
+
+
+@pytest.mark.asyncio
+async def test_init_without_model():
+    """Test initialization without model defaults to deepseek-chat"""
+    config = DeepSeekConfig(api_key="test_key")
+    llm = DeepSeekLLM(config, available_actions=None)
+    assert llm._config.model == "deepseek-chat"
+
+
+@pytest.mark.asyncio
+async def test_ask_empty_choices(llm):
+    """Test handling when API returns empty choices"""
+    empty_response = MagicMock()
+    empty_response.choices = []
+    
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(
+            llm._client.chat.completions,
+            "create",
+            AsyncMock(return_value=empty_response),
+        )
+        result = await llm.ask("test prompt")
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_ask_with_messages(llm, mock_response):
+    """Test API call with message history"""
+    messages = [
+        {"role": "user", "content": "previous message"},
+        {"role": "assistant", "content": "previous response"}
+    ]
+    
+    with pytest.MonkeyPatch.context() as m:
+        mock_create = AsyncMock(return_value=mock_response)
+        m.setattr(llm._client.chat.completions, "create", mock_create)
+        
+        await llm.ask("test prompt", messages=messages)
+        
+        # Verify messages were formatted correctly
+        call_args = mock_create.call_args
+        assert len(call_args.kwargs['messages']) == 3  # 2 history + 1 new
+
+
+@pytest.mark.asyncio
+async def test_ask_with_multiple_tool_calls(llm):
+    """Test handling multiple tool calls in one response"""
+    tool_call_1 = MagicMock()
+    tool_call_1.function.name = "function_1"
+    tool_call_1.function.arguments = '{"arg1": "value1"}'
+    
+    tool_call_2 = MagicMock()
+    tool_call_2.function.name = "function_2"
+    tool_call_2.function.arguments = '{"arg2": "value2"}'
+    
+    response = MagicMock()
+    response.choices = [
+        MagicMock(
+            message=MagicMock(tool_calls=[tool_call_1, tool_call_2])
+        )
+    ]
+    
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(
+            llm._client.chat.completions,
+            "create",
+            AsyncMock(return_value=response),
+        )
+        result = await llm.ask("test prompt")
+        assert isinstance(result, CortexOutputModel)
+        assert len(result.actions) == 2
+
+
+@pytest.mark.asyncio
+async def test_ask_timeout_configuration(llm, mock_response):
+    """Test that timeout configuration is passed to API"""
+    llm._config.timeout = 30
+    
+    with pytest.MonkeyPatch.context() as m:
+        mock_create = AsyncMock(return_value=mock_response)
+        m.setattr(llm._client.chat.completions, "create", mock_create)
+        
+        await llm.ask("test prompt")
+        
+        assert mock_create.call_args.kwargs['timeout'] == 30
+
+
+@pytest.mark.asyncio
+async def test_ask_with_available_actions(config):
+    """Test initialization with available actions"""
+    actions = [MagicMock(name="test_action")]
+    llm = DeepSeekLLM(config, available_actions=actions)
+    assert llm.function_schemas is not None
+
+
+@pytest.mark.asyncio
+async def test_messages_missing_role_or_content(llm, mock_response):
+    """Test handling of malformed messages"""
+    messages = [
+        {"role": "user"},  # missing content
+        {"content": "test"}  # missing role
+    ]
+    
+    with pytest.MonkeyPatch.context() as m:
+        mock_create = AsyncMock(return_value=mock_response)
+        m.setattr(llm._client.chat.completions, "create", mock_create)
+        
+        result = await llm.ask("test prompt", messages=messages)
+        
+        # Should handle gracefully with default values
+        call_args = mock_create.call_args
+        formatted_messages = call_args.kwargs['messages']
+        assert formatted_messages[0]['content'] == ""
+        assert formatted_messages[1]['role'] == "user"
